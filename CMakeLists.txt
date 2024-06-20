@@ -13,4 +13,6 @@ set_target_properties(${PROJECT_NAME}
 	# BUILD_TYPE Debug
 	EXPORT_COMPILE_COMMANDS ON)
 
-target_link_libraries(${PROJECT_NAME} cinder)
+target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+target_link_libraries(${PROJECT_NAME} PRIVATE cinder)

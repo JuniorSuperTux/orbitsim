@@ -3,6 +3,8 @@
 #include <cinder/gl/gl.h>
 #include <cinder/Json.h>
 
+#include <orbitsim/trajectory.hpp>
+
 #include <random>
 
 // Forces the use of Nvidia display card
@@ -36,6 +38,7 @@ float random_float(float ceiling) {
 class Planet {
 public:
 	vec3 position, speed;
+	Color color = vec3(0, 0, 0);
 	float mass /* kg */, radius /* m */;
 
 	Planet() = default;
@@ -63,26 +66,14 @@ void Planet::init_render(gl::GlslProgRef& shader) {
 }
 
 void Planet::update_speed(std::vector<Planet>& planets) {
-//	vec3 acceleration = vec3(0, 0, 0); // m/s^2
-//	for (auto& planet : planets) {
-//		if (&planet == this)
-//			continue;
-//		float x_diff = (this->position.x - planet.position.x);
-//		float y_diff = (this->position.y - planet.position.y);
-//		float z_diff = (this->position.z - planet.position.z);
-//		float denominator = pow(pow(x_diff, 2) + pow(y_diff, 2) + pow(z_diff, 2), 3 / 2);
-//		float numerator = G * (planet.mass);
-//		acceleration.x += ((numerator * x_diff) / denominator);
-//		acceleration.y += ((numerator * y_diff) / denominator);
-//		acceleration.z += ((numerator * z_diff) / denominator);
-//	}
-//	this->speed += acceleration;
 	vec3 acceleration = vec3(0, 0, 0); // m/s^2
 	for (const auto& planet : planets) {
 		if (&planet == this)
 			continue;
 		vec3 direction = planet.position - this->position;
 		float distance = glm::length(direction);
+//		if (distance < 1)
+//			throw std::range_error("Planet Collapsed");
 		if (distance > 0) {
 			direction = glm::normalize(direction);
 			float force = G * (this->mass * planet.mass) / (distance * distance);
@@ -120,6 +111,7 @@ public:
 	void mouseDrag(MouseEvent event) override;
 	void mouseDown(MouseEvent event) override;
 	void mouseWheel(MouseEvent event) override;
+	void keyDown(KeyEvent event) override;
 
 	void initialize_from_file(std::string filename);
 	void dump_to_file(std::string filename);
@@ -127,23 +119,30 @@ public:
 	std::vector<Planet> m_planets;
 private:
 	// Settings
-	const float ANGLE_SCALAR = 0.01, SCROLL_SCALAR = 100;
-	const float CAM_DIST = 400;
-	const float TIMESTEP = 0.00001;
+	static constexpr float ANGLE_SCALAR = 0.01, SCROLL_SCALAR = 100;
+	static constexpr float CAM_DIST = 400;
+	static constexpr float TIMESTEP = 0.00001;
+	static constexpr int TRACK_WIDTH = 5000, TRACK_HEIGHT = 5000, TRACK_DEPTH = 5000;
+	static constexpr int MAX_TRAJECTORY_PIXEL_AMOUNT = 145633;
 
+	std::vector<Pixel> m_trajectory_canvas;
+
+	bool pixel_in_boundary(int x, int y, int z);
+
+	std::vector<Planet> beginning_status;
+	std::string error_quit_reason;
 	void update_camera();
 	int half_rounds = 0;
 	int next_half_rounds = 0;
-
 	ivec2 m_mouse_pos;
 	float m_phi = 0, m_theta = 0;
 	float m_cam_dist = CAM_DIST;
 	CameraPersp m_cam;
+	bool m_track_trajectory = true;
 };
 
 void BasicApp::setup() {
 //	setWindowSize(1080, 1080);
-	console() << __argc << std::endl;
 	if (__argc > 1) {
 		console() << "Loading previous saved state " << __argv[1] << std::endl;
 		this->initialize_from_file(__argv[1]);
@@ -151,23 +150,38 @@ void BasicApp::setup() {
 	else {
 		getWindow()->getSignalClose().connect([this]() {
 			auto t = time(nullptr);
-			std::ostringstream oss;
-			oss << std::put_time(localtime(&t), "%Y-%m-%d %H-%M-%S");
-			oss << ".json";
-			this->dump_to_file(oss.str());
+			auto current_time = std::put_time(localtime(&t), "%Y-%m-%d %H-%M-%S");
+			std::ostringstream oss_json, oss_ply;
+			oss_json << current_time;
+			oss_json << ".json";
+			this->dump_to_file(oss_json.str());
+			oss_ply << current_time;
+			oss_ply << ".ply";
+//			exportToBinarySTL("test.stl", m_trajectory_canvas);
+			exportToPLY(oss_ply.str(), m_trajectory_canvas);
 		});
+		for (int i = 0; i < 3; ++i) {
+			m_planets.emplace_back(random_float(1000000000000, 100000000000000), random_float(5, 7),
+				vec3(random_float(-100, 100), random_float(-100, 100), random_float(-100, 100)),
+				vec3(random_float(-70, 70), random_float(-70, 70), random_float(-70, 70)));
+		}
+		m_planets.at(0).color = vec3(225, 0, 0);
+		m_planets.at(1).color = vec3(0, 225, 0);
+		m_planets.at(2).color = vec3(0, 0, 225);
+		beginning_status = m_planets;
 	}
-	setFrameRate(144.0f);
+	setFrameRate(1000000);
 
 	gl::enableDepth();
 	auto lambert = gl::ShaderDef().lambert().color();
 	gl::GlslProgRef shader = gl::getStockShader(lambert);
 
-	for (int i = 0; i < 100; ++i) {
-		m_planets.emplace_back(random_float(1000000000000000), random_float(5, 7),
-			vec3(random_float(-25, 25), random_float(-25, 25), random_float(-25, 25)),
-			vec3(random_float(-20, 20), random_float(-20, 20), random_float(-20, 20)));
-	}
+//	for (int i = 0; i < 100; ++i) {
+//		m_planets.emplace_back(random_float(1000000000000000), random_float(5, 7),
+//			vec3(random_float(-25, 25), random_float(-25, 25), random_float(-25, 25)),
+//			vec3(random_float(-20, 20), random_float(-20, 20), random_float(-20, 20)));
+//	}
+
 	for (auto& planet : m_planets)
 		planet.init_render(shader);
 
@@ -179,10 +193,33 @@ void BasicApp::draw() {
 	this->update_camera();
 	gl::setMatrices(m_cam);
 	std::vector<vec3> new_positions(m_planets.size());
-	for (size_t it = 0; it < m_planets.size(); ++it) {
-		m_planets.at(it).draw();
-		m_planets.at(it).update_speed(m_planets);
-		new_positions.at(it) = m_planets.at(it).eval_next_pos(TIMESTEP);
+	try {
+		for (size_t it = 0; it < m_planets.size(); ++it) {
+			Planet& target = m_planets.at(it);
+			target.draw();
+			target.update_speed(m_planets);
+			if (m_track_trajectory) {
+				int x = target.position.x, y = target.position.y, z = target.position.z;
+				if (pixel_in_boundary(x, y, z)) {
+					auto check_duplicate = std::find_if(m_trajectory_canvas.begin(), m_trajectory_canvas.end(), [x, y, z](const Pixel& comp) {
+						return comp.position == vec3(x, y, z);
+						});
+					if (check_duplicate != m_trajectory_canvas.end())
+						*check_duplicate = Pixel(target.color, vec3(x, y, z));
+					else {
+						m_trajectory_canvas.emplace_back(target.color, vec3(x, y, z));
+						if (m_trajectory_canvas.size() > MAX_TRAJECTORY_PIXEL_AMOUNT)
+							throw std::range_error("Pixel amount reached limit");
+					}
+				}
+			}
+			new_positions.at(it) = target.eval_next_pos(TIMESTEP);
+		}
+	}
+	catch (const std::range_error& e) {
+		this->error_quit_reason = e.what();
+		this->quit();
+		getWindow()->getSignalClose().emit();
 	}
 	for (size_t it = 0; it < m_planets.size(); ++it)
 		m_planets.at(it).set_pos(new_positions.at(it));
@@ -193,20 +230,26 @@ void BasicApp::draw() {
 		.alignment(TextBox::LEFT)
 		.font(Font("Arial", 30))
 		.size(vec2(300, 30))
-		.text("INIT")
 		.backgroundColor(ColorA(0.5f, 0.5f, 0.5f, 0.5f));
 	std::ostringstream ss;
-	ss << "phi: ";
-	ss << roundf(m_phi * 100) / 100;
-	ss << " theta: ";
-	ss << roundf(m_theta * 100) / 100;
+	ss << std::boolalpha;
+	ss << "track trajectory: ";
+	ss << m_track_trajectory;
+//	ss << "phi: ";
+//	ss << roundf(m_phi * 100) / 100;
+//	ss << " theta: ";
+//	ss << roundf(m_theta * 100) / 100;
 	m_tbox.setText(ss.str());
 	gl::TextureRef m_tbox_texture = gl::Texture::create(m_tbox.render());
-
 	gl::draw(m_tbox_texture, vec2(0, 0));
 
 }
 
+bool BasicApp::pixel_in_boundary(int x, int y, int z) {
+	return ( (-TRACK_WIDTH) <= x && x <= TRACK_WIDTH)
+		&& ( (-TRACK_HEIGHT) <= y && y <= TRACK_HEIGHT)
+		&& ( (-TRACK_DEPTH) <= z && z <= TRACK_DEPTH);
+}
 
 void BasicApp::update_camera() {
 	if (bool((next_half_rounds - half_rounds) % 2))
@@ -223,9 +266,7 @@ void BasicApp::mouseDrag(MouseEvent event) {
 	ivec2 diff = event.getPos() - m_mouse_pos;
 //  float theta = -atan2(diff.x, diff.y) + M_PI;
 //  float phi = acosf(clamp(float(diff.y) / getWindowSize().y, -1.0f, 1.0f));
-//	m_theta += (diff.x * ANGLE_SCALAR * (m_cam_dist / CAM_DIST));
 	m_theta += (diff.x * ANGLE_SCALAR);
-//	m_phi += (diff.y * ANGLE_SCALAR * (m_cam_dist / CAM_DIST));
 	m_phi += (diff.y * ANGLE_SCALAR);
 
 	next_half_rounds = int(m_phi / M_PI);
@@ -242,15 +283,23 @@ void BasicApp::mouseWheel(MouseEvent event) {
 		m_cam_dist -= diff;
 }
 
+void BasicApp::keyDown(KeyEvent event) {
+	if (event.getChar() == 'r')
+		m_track_trajectory = !m_track_trajectory;
+}
+
 void BasicApp::dump_to_file(std::string filename) {
 	std::ofstream file(filename);
-	Json planets_array = m_planets;
-	file << std::setw(4) << planets_array;
+	Json j;
+	j["error"] = error_quit_reason;
+	j["original"] = beginning_status;
+	j["end"] = m_planets;
+	file << std::setw(4) << j;
 }
 
 void BasicApp::initialize_from_file(std::string filename) {
 	std::ifstream file(filename);
-	Json planets_array = Json::parse(file);
+	Json planets_array = Json::parse(file)["end"];
 	m_planets = planets_array.template get<decltype(m_planets)>();
 }
 
